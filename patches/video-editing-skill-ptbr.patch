@@ -1,0 +1,111 @@
+--- a/scripts/transcribe.py
++++ b/scripts/transcribe.py
+@@ -24,6 +24,8 @@
+ 
+ # Whisper drops "um" and "uh" unless the prompt shows them; an editor needs them kept.
+ FILLER_PROMPT = "Umm, let me think, like, hmm... Uh, okay, so, um, here's what I, uh, mean."
++# [pt-BR patch] Portuguese prompt that shows hesitations, so Whisper writes them down.
++FILLER_PROMPT_PT = "Ahn, deixa eu pensar, éé... hum, então, tipo, ahn, o que eu quero dizer, hã, é isso."
+ 
+ API = {
+     "groq": ("https://api.groq.com/openai/v1/audio/transcriptions", "GROQ_API_KEY", "whisper-large-v3-turbo"),
+@@ -139,7 +141,7 @@
+     return words, f"{engine} ({model})"
+ 
+ 
+-def via_local(src, model_size, tmp, prompt):
++def via_local(src, model_size, tmp, prompt, language=None):
+     try:
+         from faster_whisper import WhisperModel
+     except ImportError:
+@@ -149,11 +151,14 @@
+     extract_audio(src, audio, bitrate="64k")
+     print(f"  transcribing locally with faster-whisper '{model_size}' (first run downloads the model)...",
+           flush=True)
+-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
++    model = WhisperModel(model_size, device="cpu", compute_type="int8",
++                         download_root=os.environ.get("WHISPER_MODELS_DIR") or None,
++                         cpu_threads=os.cpu_count() or 4)
+     # voice detection skips long silences, where Whisper otherwise invents words ("Thank you.")
+     segments, info = model.transcribe(audio, word_timestamps=True, vad_filter=True,
+                                       vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 200},
+-                                      initial_prompt=prompt, condition_on_previous_text=False)
++                                      initial_prompt=prompt, condition_on_previous_text=False,
++                                      language=language)
+     words = []
+     total = info.duration or 1
+     last = 0
+@@ -205,7 +210,9 @@
+     ap.add_argument("video")
+     ap.add_argument("--out", default="work")
+     ap.add_argument("--engine", choices=["auto", "local", "groq", "openai"], default="auto")
+-    ap.add_argument("--model", default="small", help="faster-whisper model: tiny, base, small, medium, large-v3")
++    ap.add_argument("--language", default=os.environ.get("WHISPER_LANGUAGE") or None,
++                    help="spoken language code, e.g. pt or en (default: auto-detect)")
++    ap.add_argument("--model", default=os.environ.get("WHISPER_MODEL", "small"), help="faster-whisper model: tiny, base, small, medium, large-v3")
+     ap.add_argument("--from", dest="subs", help="use an existing .srt or .vtt transcript instead")
+     ap.add_argument("--terms", default="", help='names and jargon to spell right, e.g. "OSIRIS-REx, Bennu, LiDAR"')
+     a = ap.parse_args()
+@@ -219,8 +226,11 @@
+             if engine == "auto":
+                 engine = "groq" if os.environ.get("GROQ_API_KEY") else \
+                          "openai" if os.environ.get("OPENAI_API_KEY") else "local"
+-            prompt = FILLER_PROMPT + (f" Names and terms: {a.terms}." if a.terms else "")
+-            words, source = (via_local(a.video, a.model, tmp, prompt) if engine == "local"
++            if (a.language or "").startswith("pt"):
++                prompt = FILLER_PROMPT_PT + (f" Nomes e termos: {a.terms}." if a.terms else "")
++            else:
++                prompt = FILLER_PROMPT + (f" Names and terms: {a.terms}." if a.terms else "")
++            words, source = (via_local(a.video, a.model, tmp, prompt, a.language) if engine == "local"
+                              else via_api(a.video, engine, tmp, prompt))
+     words = merge_fragments(words)
+     sents = sentences(words)
+--- a/scripts/edit_video.py
++++ b/scripts/edit_video.py
+@@ -36,12 +36,21 @@
+ FONT_DIR = os.path.join(HERE, "..", "fonts")
+ FONT_FILES = ["Poppins-ExtraBold.ttf", "Poppins-Bold.ttf"]
+ FONT_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/poppins/"
+-DEFAULT_FILLERS = ["um", "uh", "uhm", "umm", "er", "erm", "ah", "hmm"]
+-KEEP_REPEATS = {"very", "really", "that", "had", "is", "bye", "no", "yeah", "so", "ha", "go", "knock", "well"}
++DEFAULT_FILLERS = ["um", "uh", "uhm", "umm", "er", "erm", "ah", "hmm",
++                   # [pt-BR patch] hesitations only. Never "é" alone (it is the verb "is"),
++                   # nor "tipo"/"né"/"então" (opt-in via extra_fillers after user approval).
++                   "éé", "ééé", "eh", "ehh", "ahn", "ãh", "hã", "hum", "humm", "hm", "ãã", "ããã", "aah"]
++KEEP_REPEATS = {"very", "really", "that", "had", "is", "bye", "no", "yeah", "so", "ha", "go", "knock", "well",
++                # [pt-BR patch] intentional repeats in Portuguese
++                "muito", "não", "sim", "tá", "bem", "já", "isso", "oi", "tchau", "rs", "kkk", "vai", "corre"}
+ RETAKE_CUES = ["let me start over", "let me say that again", "let me try that again", "let me redo that",
+                "let me rephrase that", "scratch that", "take two"]
+ FUNCTION_WORDS = {"a", "an", "the", "of", "to", "for", "and", "that", "with", "on", "in", "is", "our", "my",
+-                  "your", "their", "at", "by", "from", "as", "or", "but", "so", "i", "we", "it"}
++                  "your", "their", "at", "by", "from", "as", "or", "but", "so", "i", "we", "it",
++                  # [pt-BR patch]
++                  "o", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "em", "no", "na", "nos",
++                  "nas", "e", "que", "para", "pra", "com", "por", "se", "eu", "nós", "meu", "minha",
++                  "seu", "sua", "mas", "ou", "ao", "à"}
+ PRESETS = {
+     # pauses longer than "max" shrink to a beat: "mid" inside a sentence, "end" after one,
+     # "topic" at a long gap; removals shorter than "min_cut" are left alone (a jump cut costs more)
+@@ -182,6 +191,8 @@
+     reason = [None] * len(words)
+     maybe = []
+     fillers = set(clean(f) for f in spec.get("fillers", DEFAULT_FILLERS))
++    if str(spec.get("language", "")).startswith("pt") and "fillers" not in spec:
++        fillers -= {"um", "uh", "er", "ah"}  # [pt-BR patch] "um" is the article "a/one" in Portuguese
+     extra = [f.lower().split() for f in spec.get("extra_fillers", [])]
+     cw = [clean(w["w"]) for w in words]
+     for i, c in enumerate(cw):
+@@ -686,7 +697,11 @@
+     src = spec["video"] if os.path.isabs(spec["video"]) else os.path.join(base, spec["video"])
+     if not os.path.exists(src):
+         sys.exit(f"Video not found: {src}")
+-    words = json.load(open(a.transcript, encoding="utf-8"))["words"]
++    tdata = json.load(open(a.transcript, encoding="utf-8"))
++    words = tdata["words"]
++    # [pt-BR patch] detect Portuguese from the transcript ("faster-whisper (medium, pt)")
++    if "language" not in spec and re.search(r"\bpt\b", tdata.get("source", "")):
++        spec["language"] = "pt"
+     src_w, src_h, total, fps = probe(src)
+     os.makedirs(a.out, exist_ok=True)
+     out_dir = os.path.abspath(a.out)
