@@ -1,9 +1,9 @@
 # Reinstalação (container novo)
 
-O kit está no repositório privado `zenvee-group/video`. Numa sessão sem as ferramentas:
+O kit está no repositório privado `zenvee-group/videoai`. Numa sessão sem as ferramentas:
 
 ```bash
-bash /home/user/video/setup.sh     # ou o caminho onde o repositório foi clonado
+bash /home/user/videoai/setup.sh     # ou o caminho onde o repositório foi clonado
 ```
 
 Instala: venv em /root/video-tools (faster-whisper 1.2.1, Pillow, av<17), modelo Whisper
